@@ -9,6 +9,7 @@ import random
 import re
 import time
 import os
+import uuid
 
 import requests
 
@@ -63,15 +64,6 @@ def get_time():
     return "%.0f" % (current_time.timestamp() * 1000)
 
 
-# 获取登录code
-def get_access_token(location):
-    code_pattern = re.compile("(?<=access=).*?(?=&)")
-    result = code_pattern.findall(location)
-    if result is None or len(result) == 0:
-        return None
-    return result[0]
-
-
 # pushplus消息推送
 def push_plus(title, content):
     requestUrl = f"http://www.pushplus.plus/send"
@@ -112,6 +104,8 @@ class MiMotionRunner:
             self.is_phone = True
         else:
             self.is_phone = False
+        # 新版 Zepp 接口需要区分登录方式：手机号 huami_phone / 邮箱 email
+        self.third_name = "huami_phone" if self.is_phone else "email"
         self.user = user
         self.fake_ip_addr = fake_ip()
         self.log_str += f"创建虚拟ip地址：{self.fake_ip_addr}\n"
@@ -122,22 +116,32 @@ class MiMotionRunner:
         url1 = "https://api-user.huami.com/registrations/" + self.user + "/tokens"
         login_headers = {
             "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.2",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+            "x-request-id": str(uuid.uuid4()),
+            "app_name": "com.huami.webapp",
+            "lang": "zh",
+            "accept": "application/json, text/plain, */*",
+            "accept-language": "zh-CN,zh;q=0.9",
+            "origin": "https://user.zepp.com",
+            "referer": "https://user.zepp.com/",
             "X-Forwarded-For": self.fake_ip_addr
         }
         data1 = {
             "client_id": "HuaMi",
+            "country_code": "CN",
+            "json_response": "true",
+            "name": self.user,
             "password": f"{self.password}",
             "redirect_uri": "https://s3-us-west-2.amazonaws.com/hm-registration/successsignin.html",
+            "state": "REDIRECTION",
             "token": "access"
         }
         r1 = requests.post(url1, data=data1, headers=login_headers, allow_redirects=False)
-        if r1.status_code != 303:
+        if r1.status_code != 200:
             self.log_str += "登录异常，status: %d\n" % r1.status_code
             return 0, 0
-        location = r1.headers["Location"]
         try:
-            code = get_access_token(location)
+            code = r1.json().get("access")
             if code is None:
                 self.log_str += "获取accessToken失败\n"
                 return 0, 0
@@ -147,53 +151,27 @@ class MiMotionRunner:
         # print("access_code获取成功！")
         # print(code)
 
-        url2 = "https://account.huami.com/v2/client/login"
-        if self.is_phone:
-            data2 = {
-                "app_name": "com.xiaomi.hm.health",
-                "app_version": "4.6.0",
-                "code": f"{code}",
-                "country_code": "CN",
-                "device_id": "2C8B4939-0CCD-4E94-8CBA-CB8EA6E613A1",
-                "device_model": "phone",
-                "grant_type": "access_token",
-                "third_name": "huami_phone",
-            }
-        else:
-            data2 = {
-                "allow_registration=": "false",
-                "app_name": "com.xiaomi.hm.health",
-                "app_version": "6.3.5",
-                "code": f"{code}",
-                "country_code": "CN",
-                "device_id": "2C8B4939-0CCD-4E94-8CBA-CB8EA6E613A1",
-                "device_model": "phone",
-                "dn": "api-user.huami.com%2Capi-mifit.huami.com%2Capp-analytics.huami.com",
-                "grant_type": "access_token",
-                "lang": "zh_CN",
-                "os_version": "1.5.0",
-                "source": "com.xiaomi.hm.health",
-                "third_name": "email",
-            }
+        url2 = "https://account.zepp.com/v2/client/login"
+        data2 = {
+            "app_name": "com.xiaomi.hm.health",
+            "app_version": "6.14.0",
+            "code": f"{code}",
+            "country_code": "CN",
+            "device_id": "efd38eeb-160d-44e4-9317-6df2145bcb0a",
+            "device_model": "android_phone",
+            "dn": "account.zepp.com,api-user.zepp.com,api-mifit.zepp.com,api-watch.zepp.com,"
+                  "app-analytics.zepp.com,api-analytics.huami.com,auth.zepp.com",
+            "grant_type": "access_token",
+            "allow_registration": "false",
+            "third_name": self.third_name,
+            "source": "com.xiaomi.hm.health:6.14.0:50818",
+            "lang": "zh"
+        }
         r2 = requests.post(url2, data=data2, headers=login_headers).json()
-        login_token = r2["token_info"]["login_token"]
-        # print("login_token获取成功！")
-        # print(login_token)
-        userid = r2["token_info"]["user_id"]
-        # print("userid获取成功！")
-        # print(userid)
-
-        return login_token, userid
-
-    # 获取app_token
-    def get_app_token(self, login_token):
-        url = f"https://account-cn.huami.com/v1/client/app_tokens?app_name=com.xiaomi.hm.health&dn=api-user.huami.com%2Capi-mifit.huami.com%2Capp-analytics.huami.com&login_token={login_token}"
-        headers = {'User-Agent': 'MiFit/5.3.0 (iPhone; iOS 14.7.1; Scale/3.00)', 'X-Forwarded-For': self.fake_ip_addr}
-        response = requests.get(url, headers=headers).json()
-        app_token = response['token_info']['app_token']
+        token_info = r2["token_info"]
         # print("app_token获取成功！")
-        # print(app_token)
-        return app_token
+
+        return token_info["app_token"], token_info["user_id"]
 
     # 主函数
     def login_and_post_step(self, min_step, max_step):
@@ -201,13 +179,11 @@ class MiMotionRunner:
             return "账号或密码配置有误", False
         step = str(random.randint(min_step, max_step))
         self.log_str += f"已设置为随机步数范围({min_step}~{max_step}) 随机值:{step}\n"
-        login_token, userid = self.login()
-        if login_token == 0:
+        app_token, userid = self.login()
+        if app_token == 0:
             return "登陆失败！", False
 
         t = get_time()
-
-        app_token = self.get_app_token(login_token)
 
         today = time.strftime("%F")
 
@@ -218,7 +194,7 @@ class MiMotionRunner:
         data_json = re.sub(finddate.findall(data_json)[0], today, str(data_json))
         data_json = re.sub(findstep.findall(data_json)[0], step, str(data_json))
 
-        url = f'https://api-mifit-cn.huami.com/v1/data/band_data.json?&t={t}'
+        url = f'https://api-mifit-cn.zepp.com/v1/data/band_data.json?&t={t}'
         head = {
             "apptoken": app_token,
             "Content-Type": "application/x-www-form-urlencoded",
