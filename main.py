@@ -167,8 +167,19 @@ class MiMotionRunner:
             "source": "com.xiaomi.hm.health:6.14.0:50818",
             "lang": "zh"
         }
-        r2 = requests.post(url2, data=data2, headers=login_headers).json()
-        token_info = r2["token_info"]
+        r2 = requests.post(url2, data=data2, headers=login_headers)
+        try:
+            r2_json = r2.json()
+        except:
+            self.log_str += f"登录接口返回非JSON，status: {r2.status_code}\n"
+            return 0, 0
+        if "token_info" not in r2_json:
+            # 打印服务器返回的错误信息，便于定位（如密码错误、验证码等）
+            err = r2_json.get("error", r2_json.get("message", r2_json.get("description", "")))
+            self.log_str += f"登录被拒绝，status: {r2.status_code}，返回: {err}\n"
+            self.log_str += f"完整响应: {str(r2_json)[:500]}\n"
+            return 0, 0
+        token_info = r2_json["token_info"]
         # print("app_token获取成功！")
 
         return token_info["app_token"], token_info["user_id"]
